@@ -1,0 +1,1 @@
+Simple editor learning project
