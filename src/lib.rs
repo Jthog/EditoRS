@@ -95,7 +95,9 @@ impl Editor {
         execute!(
             self.stdout,
             MoveTo(0, w_rows),
-            PrintStyledContent(format!(" {: <3} | {: <3} ", column - 4, row).on_dark_grey()),
+            PrintStyledContent(
+                format!(" {: <3} | {: <3}  Esc to quit", column - 4, row).on_dark_grey()
+            ),
             RestorePosition
         )
         .unwrap();
