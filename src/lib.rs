@@ -1,6 +1,5 @@
 use crossterm::cursor::{
-    self, MoveDown, MoveLeft, MoveRight, MoveTo, MoveUp, RestorePosition, SavePosition,
-    SetCursorStyle,
+    self, MoveLeft, MoveRight, MoveTo, RestorePosition, SavePosition, SetCursorStyle,
 };
 use crossterm::event::KeyCode;
 use crossterm::style::SetBackgroundColor;
@@ -15,7 +14,7 @@ use crossterm::{
 };
 use piece_table::PieceTable;
 use std::io::{stdout, Stdout, Write};
-use std::{fs, usize};
+use std::{cmp, fs, usize};
 
 mod piece_table;
 
@@ -24,6 +23,7 @@ pub struct Editor {
     pub file_path: Option<String>,
     contents: PieceTable,
     input_buffer: InputBuffer,
+    column_pos: Option<u16>,
 }
 
 pub struct InputBuffer {
@@ -51,6 +51,7 @@ impl Editor {
             file_path,
             contents,
             input_buffer: InputBuffer::build(0),
+            column_pos: None,
         })
     }
 
@@ -60,7 +61,6 @@ impl Editor {
             self.stdout,
             EnterAlternateScreen,
             Clear(ClearType::All),
-            SetCursorStyle::BlinkingBar,
             MoveTo(4, 0),
             SetBackgroundColor(Color::DarkGrey)
         )
@@ -75,11 +75,28 @@ impl Editor {
         }
     }
 
+    fn get_contents(&self) -> String {
+        let table_contents: Vec<char> = self.contents.read().chars().collect();
+        let shown_contents: String = [
+            &table_contents[0..self.input_buffer.start],
+            &self.input_buffer.read().chars().collect::<Vec<_>>(),
+            &table_contents[self.input_buffer.start..],
+        ]
+        .concat()
+        .iter()
+        .collect();
+        return shown_contents;
+    }
+
     fn render_contents(&mut self) {
         execute!(self.stdout, SavePosition).unwrap();
+        let mut pos = 0;
+        if let Some(position) = self.get_position() {
+            pos = position;
+        }
         let (column, row) = cursor::position().unwrap();
-        let mut shown_contents = self.contents.read();
-        shown_contents.insert_str(self.input_buffer.start, &self.input_buffer.read());
+        let shown_contents = self.get_contents();
+
         for (i, line) in shown_contents.split("\n").enumerate() {
             queue!(
                 self.stdout,
@@ -96,7 +113,15 @@ impl Editor {
             self.stdout,
             MoveTo(0, w_rows),
             PrintStyledContent(
-                format!(" {: <3} | {: <3}  Esc to quit", column - 4, row).on_dark_grey()
+                format!(
+                    " {: <3} | {: <3} Postion: {} char: {:?} column_pos: {:?}",
+                    column - 4,
+                    row,
+                    pos,
+                    shown_contents.chars().nth(pos),
+                    self.column_pos,
+                )
+                .on_dark_grey()
             ),
             RestorePosition
         )
@@ -107,15 +132,22 @@ impl Editor {
         let (column, row) = cursor::position().unwrap();
         let mut position: Option<usize> = None;
         let (mut pointer_col, mut pointer_row) = (4, 0);
-        let mut contents = self.contents.read();
-        contents.insert_str(self.input_buffer.start, &self.input_buffer.read());
-        for (i, char) in contents.chars().enumerate() {
+        let mut contents: Vec<char> = self.contents.read().chars().collect();
+        let buffer_contents: Vec<char> = self.input_buffer.read().chars().collect();
+        contents = [
+            &contents[0..self.input_buffer.start],
+            &buffer_contents,
+            &contents[self.input_buffer.start..],
+        ]
+        .concat();
+
+        for (i, char) in contents.iter().enumerate() {
             if pointer_col == column && pointer_row == row {
                 position = Some(i);
                 break;
             }
-            if char == 0xA as char {
-                (pointer_col, pointer_row) = (3, pointer_row + 1);
+            if *char == 0xA as char {
+                (pointer_col, pointer_row) = (4, pointer_row + 1);
             } else {
                 pointer_col += 1;
             }
@@ -125,10 +157,10 @@ impl Editor {
 
     pub fn handle_key_input(&mut self, keycode: KeyCode) {
         match keycode {
-            KeyCode::Left => execute!(self.stdout, MoveLeft(1)).unwrap(),
-            KeyCode::Right => execute!(self.stdout, MoveRight(1)).unwrap(),
-            KeyCode::Up => execute!(self.stdout, MoveUp(1)).unwrap(),
-            KeyCode::Down => execute!(self.stdout, MoveDown(1)).unwrap(),
+            KeyCode::Left => self.move_cursor(-1, 0),
+            KeyCode::Right => self.move_cursor(1, 0),
+            KeyCode::Up => self.move_cursor(0, -1),
+            KeyCode::Down => self.move_cursor(0, 1),
             KeyCode::Char(c) => self.write(c),
             KeyCode::Enter => self.write('\n'),
             KeyCode::Delete => self.contents.delete(self.get_position().unwrap()),
@@ -137,8 +169,64 @@ impl Editor {
         self.render_contents();
     }
 
-    fn move_restricted(right: usize, down: usize) {
-        return;
+    fn move_cursor(&mut self, right: i32, down: i32) {
+        let (column, row) = cursor::position().unwrap();
+        let text = self.get_contents();
+        if right > 0 {
+            if let Some(line) = text.lines().nth(row.into()) {
+                if line.chars().count() + 4 > column.into() {
+                    execute!(self.stdout, MoveRight(1)).unwrap();
+                    self.column_pos = None;
+                }
+            }
+        } else if right < 0 {
+            if column > 4 {
+                execute!(self.stdout, MoveLeft(1)).unwrap();
+                self.column_pos = None;
+            }
+        }
+
+        if down > 0 {
+            if text.lines().count() > row.into() {
+                if let None = self.column_pos {
+                    self.column_pos = Some(column);
+                }
+                execute!(
+                    self.stdout,
+                    MoveTo(
+                        cmp::min(
+                            (text.lines().nth((row + 1).into()).unwrap().chars().count() + 4)
+                                .try_into()
+                                .unwrap(),
+                            self.column_pos
+                                .expect("Column position should not be None!"),
+                        ),
+                        row + 1,
+                    )
+                )
+                .unwrap();
+            }
+        } else if down < 0 {
+            if row > 0 {
+                if let None = self.column_pos {
+                    self.column_pos = Some(column);
+                }
+                execute!(
+                    self.stdout,
+                    MoveTo(
+                        cmp::min(
+                            (text.lines().nth((row + 1).into()).unwrap().chars().count() + 4)
+                                .try_into()
+                                .unwrap(),
+                            self.column_pos
+                                .expect("Column position should not be None!"),
+                        ),
+                        row - 1,
+                    )
+                )
+                .unwrap();
+            }
+        }
     }
 
     fn write(&mut self, char: char) {
@@ -147,6 +235,8 @@ impl Editor {
             if let Some(output) = self.input_buffer.write(char, position) {
                 self.contents.insert(&output, self.input_buffer.start);
                 self.input_buffer.buffer.truncate(0);
+                self.input_buffer.start = position;
+                self.input_buffer.buffer.push(char);
             }
         } else {
             return;
