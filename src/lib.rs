@@ -1,12 +1,8 @@
 use crossterm::cursor::{
-    self, MoveLeft, MoveRight, MoveTo, RestorePosition, SavePosition, SetCursorStyle,
+    MoveLeft, MoveRight, MoveTo, MoveToNextLine, RestorePosition, SavePosition, SetCursorStyle,
 };
 use crossterm::event::KeyCode;
-use crossterm::style::SetBackgroundColor;
-use crossterm::style::{
-    Color::{self},
-    Print, PrintStyledContent, Stylize,
-};
+use crossterm::style::{Print, PrintStyledContent, Stylize};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size, Clear, ClearType, SetTitle};
 use crossterm::{
     execute, queue,
@@ -18,17 +14,24 @@ use std::{cmp, fs, usize};
 
 mod piece_table;
 
+// TODO: input buffer entfernen und piece_table::insert anpassen
 pub struct Editor {
     pub stdout: Stdout,
     pub file_path: Option<String>,
     contents: PieceTable,
     input_buffer: InputBuffer,
     column_pos: Option<u16>,
+    cursor_pos: CursorPosition,
 }
 
 pub struct InputBuffer {
     buffer: Vec<char>,
     start: usize,
+}
+
+pub struct CursorPosition {
+    x: u16,
+    y: u16,
 }
 
 impl Editor {
@@ -52,6 +55,7 @@ impl Editor {
             contents,
             input_buffer: InputBuffer::build(0),
             column_pos: None,
+            cursor_pos: CursorPosition { x: 0, y: 0 },
         })
     }
 
@@ -62,7 +66,6 @@ impl Editor {
             EnterAlternateScreen,
             Clear(ClearType::All),
             MoveTo(4, 0),
-            SetBackgroundColor(Color::DarkGrey)
         )
         .unwrap();
 
@@ -94,7 +97,7 @@ impl Editor {
         if let Some(position) = self.get_position() {
             pos = position;
         }
-        let (column, row) = cursor::position().unwrap();
+        let (column, row) = (self.cursor_pos.x, self.cursor_pos.y);
         let shown_contents = self.get_contents();
 
         for (i, line) in shown_contents.split("\n").enumerate() {
@@ -114,11 +117,11 @@ impl Editor {
             MoveTo(0, w_rows),
             PrintStyledContent(
                 format!(
-                    " {: <3} | {: <3} Postion: {} char: {:?} column_pos: {:?}",
-                    column - 4,
+                    " {: <3} | {: <3} Postion: {} line_length: {:?} column_pos: {:?}",
+                    column,
                     row,
                     pos,
-                    shown_contents.chars().nth(pos),
+                    self.contents.get_line_length(row.into()),
                     self.column_pos,
                 )
                 .on_dark_grey()
@@ -129,9 +132,9 @@ impl Editor {
     }
 
     pub fn get_position(&self) -> Option<usize> {
-        let (column, row) = cursor::position().unwrap();
+        let (column, row) = (self.cursor_pos.x, self.cursor_pos.y);
         let mut position: Option<usize> = None;
-        let (mut pointer_col, mut pointer_row) = (4, 0);
+        let (mut pointer_col, mut pointer_row) = (0, 0);
         let mut contents: Vec<char> = self.contents.read().chars().collect();
         let buffer_contents: Vec<char> = self.input_buffer.read().chars().collect();
         contents = [
@@ -147,7 +150,7 @@ impl Editor {
                 break;
             }
             if *char == 0xA as char {
-                (pointer_col, pointer_row) = (4, pointer_row + 1);
+                (pointer_col, pointer_row) = (0, pointer_row + 1);
             } else {
                 pointer_col += 1;
             }
@@ -162,7 +165,19 @@ impl Editor {
             KeyCode::Up => self.move_cursor(0, -1),
             KeyCode::Down => self.move_cursor(0, 1),
             KeyCode::Char(c) => self.write(c),
-            KeyCode::Enter => self.write('\n'),
+            KeyCode::Enter => {
+                self.write(0x00A as char);
+                execute!(
+                    self.stdout,
+                    Clear(ClearType::All),
+                    MoveToNextLine(1),
+                    MoveRight(4)
+                )
+                .unwrap();
+                self.cursor_pos.y += 1;
+                self.cursor_pos.x = 0;
+                //self.render_contents();
+            }
             KeyCode::Delete => self.contents.delete(self.get_position().unwrap()),
             _ => {}
         }
@@ -170,18 +185,19 @@ impl Editor {
     }
 
     fn move_cursor(&mut self, right: i32, down: i32) {
-        let (column, row) = cursor::position().unwrap();
+        // TODO: Replace with enum and match
+        let (column, row) = (self.cursor_pos.x, self.cursor_pos.y);
         let text = self.get_contents();
         if right > 0 {
-            if let Some(line) = text.lines().nth(row.into()) {
-                if line.chars().count() + 4 > column.into() {
-                    execute!(self.stdout, MoveRight(1)).unwrap();
-                    self.column_pos = None;
-                }
+            if self.contents.get_line_length(row.into()) > column.into() {
+                execute!(self.stdout, MoveRight(1)).unwrap();
+                self.cursor_pos.x += 1;
+                self.column_pos = None;
             }
         } else if right < 0 {
-            if column > 4 {
+            if column > 0 {
                 execute!(self.stdout, MoveLeft(1)).unwrap();
+                self.cursor_pos.x -= 1;
                 self.column_pos = None;
             }
         }
@@ -191,40 +207,34 @@ impl Editor {
                 if let None = self.column_pos {
                     self.column_pos = Some(column);
                 }
-                execute!(
-                    self.stdout,
-                    MoveTo(
-                        cmp::min(
-                            (text.lines().nth((row + 1).into()).unwrap().chars().count() + 4)
-                                .try_into()
-                                .unwrap(),
-                            self.column_pos
-                                .expect("Column position should not be None!"),
-                        ),
-                        row + 1,
-                    )
-                )
-                .unwrap();
+                let x = cmp::min(
+                    self.contents
+                        .get_line_length(<u16 as Into<usize>>::into(row) + 1)
+                        .try_into()
+                        .unwrap(),
+                    self.column_pos
+                        .expect("Column position should not be None!"),
+                );
+                execute!(self.stdout, MoveTo(x + 4, row + 1)).unwrap();
+                self.cursor_pos.x = x;
+                self.cursor_pos.y += 1;
             }
         } else if down < 0 {
             if row > 0 {
                 if let None = self.column_pos {
                     self.column_pos = Some(column);
                 }
-                execute!(
-                    self.stdout,
-                    MoveTo(
-                        cmp::min(
-                            (text.lines().nth((row + 1).into()).unwrap().chars().count() + 4)
-                                .try_into()
-                                .unwrap(),
-                            self.column_pos
-                                .expect("Column position should not be None!"),
-                        ),
-                        row - 1,
-                    )
-                )
-                .unwrap();
+                let x = cmp::min(
+                    self.contents
+                        .get_line_length(<u16 as Into<usize>>::into(row) - 1)
+                        .try_into()
+                        .unwrap(),
+                    self.column_pos
+                        .expect("Column position should not be None!"),
+                );
+                execute!(self.stdout, MoveTo(x + 4, row - 1,)).unwrap();
+                self.cursor_pos.x = x;
+                self.cursor_pos.y -= 1;
             }
         }
     }
@@ -232,6 +242,7 @@ impl Editor {
     fn write(&mut self, char: char) {
         if let Some(position) = self.get_position() {
             execute!(self.stdout, MoveRight(1)).unwrap();
+            self.cursor_pos.x += 1;
             if let Some(output) = self.input_buffer.write(char, position) {
                 self.contents.insert(&output, self.input_buffer.start);
                 self.input_buffer.buffer.truncate(0);
