@@ -3,10 +3,12 @@ use crossterm::cursor::{
 };
 use crossterm::event::KeyCode;
 use crossterm::style::{Print, PrintStyledContent, Stylize};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size, Clear, ClearType, SetTitle};
 use crossterm::{
     execute, queue,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, size, Clear, ClearType, EnterAlternateScreen,
+        LeaveAlternateScreen, SetTitle,
+    },
 };
 use piece_table::PieceTable;
 use std::io::{stdout, Stdout, Write};
@@ -14,19 +16,12 @@ use std::{cmp, fs, usize};
 
 mod piece_table;
 
-// TODO: input buffer entfernen und piece_table::insert anpassen
 pub struct Editor {
     pub stdout: Stdout,
     pub file_path: Option<String>,
     contents: PieceTable,
-    input_buffer: InputBuffer,
     column_pos: Option<u16>,
     cursor_pos: CursorPosition,
-}
-
-pub struct InputBuffer {
-    buffer: Vec<char>,
-    start: usize,
 }
 
 pub struct CursorPosition {
@@ -35,7 +30,7 @@ pub struct CursorPosition {
 }
 
 impl Editor {
-    pub fn build(mut args: impl Iterator<Item = String>) -> Result<Editor, &'static str> {
+    pub fn build(mut args: impl Iterator<Item = String>) -> Result<Editor, std::io::Error> {
         args.next();
 
         let file_path = args.next();
@@ -44,7 +39,7 @@ impl Editor {
 
         let mut file_contents = String::from("");
         if let Some(ref file) = file_path {
-            file_contents = fs::read_to_string(file).unwrap();
+            file_contents = fs::read_to_string(file)?;
         }
 
         let contents = PieceTable::build(file_contents);
@@ -53,7 +48,6 @@ impl Editor {
             stdout,
             file_path,
             contents,
-            input_buffer: InputBuffer::build(0),
             column_pos: None,
             cursor_pos: CursorPosition { x: 0, y: 0 },
         })
@@ -78,19 +72,6 @@ impl Editor {
         }
     }
 
-    fn get_contents(&self) -> String {
-        let table_contents: Vec<char> = self.contents.read().chars().collect();
-        let shown_contents: String = [
-            &table_contents[0..self.input_buffer.start],
-            &self.input_buffer.read().chars().collect::<Vec<_>>(),
-            &table_contents[self.input_buffer.start..],
-        ]
-        .concat()
-        .iter()
-        .collect();
-        return shown_contents;
-    }
-
     fn render_contents(&mut self) {
         execute!(self.stdout, SavePosition).unwrap();
         let mut pos = 0;
@@ -98,9 +79,10 @@ impl Editor {
             pos = position;
         }
         let (column, row) = (self.cursor_pos.x, self.cursor_pos.y);
-        let shown_contents = self.get_contents();
+        let shown_contents = self.contents.read();
 
-        for (i, line) in shown_contents.split("\n").enumerate() {
+        queue!(self.stdout, Clear(ClearType::All)).unwrap();
+        for (i, line) in shown_contents.lines().enumerate() {
             queue!(
                 self.stdout,
                 MoveTo(0, i.try_into().unwrap()),
@@ -110,16 +92,15 @@ impl Editor {
             )
             .unwrap();
         }
-        let _ = self.stdout.flush();
         let (_, w_rows) = size().unwrap();
-        execute!(
+        queue!(
             self.stdout,
             MoveTo(0, w_rows),
             PrintStyledContent(
                 format!(
-                    " {: <3} | {: <3} Postion: {} line_length: {:?} column_pos: {:?}",
+                    "{: >3}|{: <3} Ctrl+C: quit Ctrl+S: save | str_position: {} line_len: {:?} column_pos: {:?}",
+                    row + 1,
                     column,
-                    row,
                     pos,
                     self.contents.get_line_length(row.into()),
                     self.column_pos,
@@ -129,20 +110,14 @@ impl Editor {
             RestorePosition
         )
         .unwrap();
+        let _ = self.stdout.flush();
     }
 
     pub fn get_position(&self) -> Option<usize> {
         let (column, row) = (self.cursor_pos.x, self.cursor_pos.y);
         let mut position: Option<usize> = None;
         let (mut pointer_col, mut pointer_row) = (0, 0);
-        let mut contents: Vec<char> = self.contents.read().chars().collect();
-        let buffer_contents: Vec<char> = self.input_buffer.read().chars().collect();
-        contents = [
-            &contents[0..self.input_buffer.start],
-            &buffer_contents,
-            &contents[self.input_buffer.start..],
-        ]
-        .concat();
+        let contents: Vec<char> = self.contents.read().chars().collect();
 
         for (i, char) in contents.iter().enumerate() {
             if pointer_col == column && pointer_row == row {
@@ -167,18 +142,26 @@ impl Editor {
             KeyCode::Char(c) => self.write(c),
             KeyCode::Enter => {
                 self.write(0x00A as char);
-                execute!(
-                    self.stdout,
-                    Clear(ClearType::All),
-                    MoveToNextLine(1),
-                    MoveRight(4)
-                )
-                .unwrap();
+                execute!(self.stdout, MoveToNextLine(1), MoveRight(4)).unwrap();
                 self.cursor_pos.y += 1;
                 self.cursor_pos.x = 0;
-                //self.render_contents();
             }
-            KeyCode::Delete => self.contents.delete(self.get_position().unwrap()),
+            KeyCode::Backspace => {
+                if let Some(pos) = self.get_position() {
+                    if pos > 0 {
+                        // INFO: adjust cursor position
+                        if self.cursor_pos.x > 0 {
+                            execute!(self.stdout, MoveLeft(1)).unwrap();
+                            self.cursor_pos.x -= 1;
+                        } else {
+                            self.column_pos = Some(8000);
+                            self.move_cursor(0, -1);
+                        }
+
+                        self.contents.delete(pos - 1);
+                    }
+                }
+            }
             _ => {}
         }
         self.render_contents();
@@ -187,7 +170,7 @@ impl Editor {
     fn move_cursor(&mut self, right: i32, down: i32) {
         // TODO: Replace with enum and match
         let (column, row) = (self.cursor_pos.x, self.cursor_pos.y);
-        let text = self.get_contents();
+        let text = self.contents.read();
         if right > 0 {
             if self.contents.get_line_length(row.into()) > column.into() {
                 execute!(self.stdout, MoveRight(1)).unwrap();
@@ -203,7 +186,7 @@ impl Editor {
         }
 
         if down > 0 {
-            if text.lines().count() > row.into() {
+            if text.lines().count() - 1 > row.into() {
                 if let None = self.column_pos {
                     self.column_pos = Some(column);
                 }
@@ -243,11 +226,8 @@ impl Editor {
         if let Some(position) = self.get_position() {
             execute!(self.stdout, MoveRight(1)).unwrap();
             self.cursor_pos.x += 1;
-            if let Some(output) = self.input_buffer.write(char, position) {
-                self.contents.insert(&output, self.input_buffer.start);
-                self.input_buffer.buffer.truncate(0);
-                self.input_buffer.start = position;
-                self.input_buffer.buffer.push(char);
+            if true {
+                self.contents.insert(char, position);
             }
         } else {
             return;
@@ -263,33 +243,16 @@ impl Editor {
         )
         .unwrap();
     }
-}
 
-impl InputBuffer {
-    fn build(start: usize) -> InputBuffer {
-        InputBuffer {
-            buffer: Vec::new(),
-            start,
+    pub fn write_to_file(&self) {
+        let file_contents = self.contents.read();
+        if let Some(path) = &self.file_path {
+            let _ = fs::write(path, file_contents);
         }
     }
 
-    fn write(&mut self, char: char, position: usize) -> Option<String> {
-        if self.buffer.len() == 0 {
-            self.start = position;
-        }
-        if self.start + self.buffer.len() == position {
-            self.buffer.push(char);
-            None
-        } else if self.start + self.buffer.len() > position && position >= self.start {
-            self.buffer[position - self.start] = char;
-            None
-        } else {
-            let output = self.read();
-            Some(output)
-        }
-    }
-
-    fn read(&self) -> String {
-        self.buffer.iter().cloned().collect::<String>()
+    pub fn write_pieces(&self) {
+        let pieces = self.contents.get_pieces();
+        let _ = fs::write("debug.json", pieces);
     }
 }
