@@ -5,6 +5,11 @@ pub struct PieceTable {
     original_buf: Buffer,
     add_buf: Buffer,
     pieces: Vec<Piece>,
+<<<<<<< HEAD
+=======
+    pieces_history: Vec<Vec<Piece>>,
+    history_pos: usize,
+>>>>>>> 95204e2 (General rework and expansion to preliminary working condition.)
 }
 
 struct Buffer {
@@ -34,7 +39,11 @@ impl fmt::Display for Source {
 }
 
 impl PieceTable {
+<<<<<<< HEAD
     pub fn build(contents: String) -> PieceTable {
+=======
+    pub fn new(contents: String) -> PieceTable {
+>>>>>>> 95204e2 (General rework and expansion to preliminary working condition.)
         let original_buf = Buffer { contents };
         let pieces = vec![Piece {
             source: Source::Original,
@@ -46,7 +55,33 @@ impl PieceTable {
             add_buf: Buffer {
                 contents: String::from(""),
             },
+<<<<<<< HEAD
             pieces,
+=======
+            pieces: pieces.clone(),
+            pieces_history: vec![pieces],
+            history_pos: 0,
+        }
+    }
+
+    fn store(&mut self) {
+        self.history_pos = self.history_pos + 1;
+        self.pieces_history.resize(self.history_pos, Vec::new());
+        self.pieces_history.push(self.pieces.clone());
+    }
+
+    pub fn undo(&mut self) {
+        if self.history_pos > 0 {
+            self.history_pos = self.history_pos - 1;
+            self.pieces = self.pieces_history[self.history_pos].clone();
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if self.history_pos < self.pieces_history.len() - 1 {
+            self.history_pos = self.history_pos + 1;
+            self.pieces = self.pieces_history[self.history_pos].clone();
+>>>>>>> 95204e2 (General rework and expansion to preliminary working condition.)
         }
     }
 
@@ -101,6 +136,11 @@ impl PieceTable {
         }
 
         self.add_buf.contents.push(insert_char);
+<<<<<<< HEAD
+=======
+
+        self.store();
+>>>>>>> 95204e2 (General rework and expansion to preliminary working condition.)
     }
 
     pub fn delete(&mut self, position: usize) {
@@ -134,6 +174,10 @@ impl PieceTable {
                 break;
             }
         }
+<<<<<<< HEAD
+=======
+        self.store();
+>>>>>>> 95204e2 (General rework and expansion to preliminary working condition.)
     }
 
     pub fn read(&self) -> String {
@@ -155,10 +199,17 @@ impl PieceTable {
         output
     }
 
+<<<<<<< HEAD
     pub fn get_line_length(&self, line_index: usize) -> usize {
         let mut line_length = 0;
         let text = self.read();
         if let Some(line) = text.lines().nth(line_index) {
+=======
+    pub fn get_line_length(&self, line_index: u16) -> usize {
+        let mut line_length = 0;
+        let text = self.read();
+        if let Some(line) = text.lines().nth(line_index.into()) {
+>>>>>>> 95204e2 (General rework and expansion to preliminary working condition.)
             line_length = line.chars().count();
         }
         return line_length;

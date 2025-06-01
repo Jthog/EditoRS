@@ -4,4 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+<<<<<<< HEAD
 crossterm = "0.27.0"
+=======
+crossterm = "0.28.1"
+>>>>>>> 95204e2 (General rework and expansion to preliminary working condition.)
